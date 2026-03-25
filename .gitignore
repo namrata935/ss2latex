@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Virtual environments
+stage2_env/
+venv/
+.venv/
+
+# Model caches
+.cache/
+
+# Outputs
+stage2_output.json
+stage2_test_output.json
+pdf_pages/
+finetune_data/
+test_crops/
+
+# Datasets (keep large data out of git)
+data/
+datasets/
+latte_data/

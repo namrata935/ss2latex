@@ -1,0 +1,9 @@
+easyocr
+pillow
+numpy
+torch
+torchvision
+transformers
+timm
+opencv-python
+pdf2image
