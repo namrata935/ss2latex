@@ -44,6 +44,22 @@ def preprocess_image(img: np.ndarray) -> np.ndarray:
         pil      = ImageEnhance.Contrast(pil).enhance(factor)
         result   = np.array(pil)
 
+    if CONFIG.get("preprocess_binarize"):
+        gray = cv2.cvtColor(result, cv2.COLOR_RGB2GRAY)
+        bin_img = cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31, 10
+        )
+        result = cv2.cvtColor(bin_img, cv2.COLOR_GRAY2RGB)
+
+    if CONFIG.get("preprocess_sharpen"):
+        kernel = np.array([[0, -1, 0],
+                           [-1, 5, -1],
+                           [0, -1, 0]], dtype=np.float32)
+        result = cv2.filter2D(result, -1, kernel)
+
     return result
 
 

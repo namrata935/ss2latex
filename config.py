@@ -11,7 +11,9 @@ CONFIG = {
     "preprocess_deskew":       True,     # correct screenshot rotation
     "preprocess_denoise":      True,     # remove compression artifacts
     "preprocess_contrast":     True,     # enhance text visibility
-    "preprocess_contrast_factor": 1.8,  # contrast strength
+    "preprocess_contrast_factor": 2.2,  # contrast strength
+    "preprocess_binarize":     False,     # adaptive thresholding
+    "preprocess_sharpen":      True,     # unsharp mask
     "tatr_confidence":         0.7,      # TATR detection threshold
     "ocr_confidence":          0.3,      # EasyOCR minimum confidence
     "use_slanet":              True,    # use PaddleOCR SLANet table solver
