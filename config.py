@@ -11,8 +11,15 @@ CONFIG = {
     "preprocess_deskew":       True,     # correct screenshot rotation
     "preprocess_denoise":      True,     # remove compression artifacts
     "preprocess_contrast":     True,     # enhance text visibility
+    "preprocess_contrast_factor": 1.8,  # contrast strength
     "tatr_confidence":         0.7,      # TATR detection threshold
     "ocr_confidence":          0.3,      # EasyOCR minimum confidence
+    "use_slanet":              True,    # use PaddleOCR SLANet table solver
+    "table_upscale":           1.25,     # upscale factor for tables before parsing
+    "table_min_col_width_ratio": 0.06,  # merge very narrow columns
+    "table_merge_dollar_cols": True,    # merge columns that only contain "$"
+    "ppstructure_lang":        "en",    # PaddleOCR PP-StructureV3 language
+    "ppstructure_text_recognition_model_name": "en_PP-OCRv4_mobile_rec",
 }
 
 # TATR pretrained model — Microsoft, trained on PubTables-1M

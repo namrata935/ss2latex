@@ -40,7 +40,8 @@ def preprocess_image(img: np.ndarray) -> np.ndarray:
 
     if CONFIG["preprocess_contrast"]:
         pil      = Image.fromarray(result)
-        pil      = ImageEnhance.Contrast(pil).enhance(1.5)
+        factor   = float(CONFIG.get("preprocess_contrast_factor", 1.5))
+        pil      = ImageEnhance.Contrast(pil).enhance(factor)
         result   = np.array(pil)
 
     return result

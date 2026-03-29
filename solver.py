@@ -25,7 +25,14 @@ from PIL import Image
 from transformers import AutoImageProcessor, TableTransformerForObjectDetection
 
 from config import CONFIG, TATR_MODEL
-from utils import latex_escape, strip_bullet
+from utils import (
+    latex_escape,
+    strip_bullet,
+    html_table_to_grid,
+    grid_to_tabular,
+    clean_table_grid,
+    clean_latex_table,
+)
 from preprocess import preprocess_image
 
 
@@ -78,6 +85,13 @@ class TATRTableSolver:
             }
 
         grid = self._build_grid(img, rows, cols)
+        col_widths = [max(0.0, float(c[2] - c[0])) for c in cols]
+        grid = clean_table_grid(
+            grid,
+            col_widths=col_widths,
+            min_col_width_ratio=CONFIG.get("table_min_col_width_ratio", 0.06),
+            merge_dollar_cols=CONFIG.get("table_merge_dollar_cols", True),
+        )
         return {
             "latex":      self._grid_to_tabular(grid),
             "table_grid": grid,
@@ -136,6 +150,96 @@ class TATRTableSolver:
                 lines.append("\\hline")
         lines.append("\\end{tabular}")
         return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# SLANet (PaddleOCR PP-StructureV3) Table Solver
+# ─────────────────────────────────────────────
+
+class SLANetTableSolver:
+    """
+    PaddleOCR PP-StructureV3 table recognition using SLANet for structure.
+    Returns HTML, converts it to a LaTeX tabular.
+    """
+
+    def __init__(self):
+        try:
+            from paddleocr import PPStructureV3
+        except Exception as e:
+            raise ImportError(
+                "PaddleOCR not installed. Install paddleocr and paddlepaddle."
+            ) from e
+
+        params = {}
+        lang = CONFIG.get("ppstructure_lang")
+        if lang:
+            params["lang"] = lang
+        rec_model = CONFIG.get("ppstructure_text_recognition_model_name")
+        if rec_model:
+            params["text_recognition_model_name"] = rec_model
+
+        self.engine = PPStructureV3(**params)
+
+    def parse(self, img: np.ndarray) -> dict:
+        # PaddleOCR expects BGR images
+        import cv2
+
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        try:
+            result = self.engine.predict(bgr)
+        except Exception:
+            # older API fallback
+            result = self.engine(bgr)
+
+        html = self._extract_html(result)
+        if not html:
+            return {
+                "latex":      "",
+                "table_grid": [],
+                "text":       "",
+                "html":       "",
+            }
+
+        grid = html_table_to_grid(html)
+        grid = clean_table_grid(
+            grid,
+            col_widths=None,
+            min_col_width_ratio=CONFIG.get("table_min_col_width_ratio", 0.06),
+            merge_dollar_cols=CONFIG.get("table_merge_dollar_cols", True),
+        )
+        return {
+            "latex":      grid_to_tabular(grid),
+            "table_grid": grid,
+            "text":       " | ".join(c for row in grid for c in row),
+            "html":       html,
+        }
+
+    def _extract_html(self, result) -> str:
+        if not result:
+            return ""
+        for item in result:
+            if isinstance(item, dict):
+                res = item.get("res", item.get("result", item))
+                if isinstance(res, dict):
+                    if res.get("html"):
+                        return res["html"]
+                    if res.get("structure") and isinstance(res["structure"], list):
+                        return "".join(res["structure"])
+                if isinstance(item.get("html"), str):
+                    return item["html"]
+            else:
+                # object-style result
+                for attr in ("res", "result", "html"):
+                    val = getattr(item, attr, None)
+                    if isinstance(val, dict):
+                        if val.get("html"):
+                            return val["html"]
+                        if val.get("structure") and isinstance(val["structure"], list):
+                            return "".join(val["structure"])
+                    if isinstance(val, str) and val.strip().startswith("<table"):
+                        return val
+        return ""
+
 
 
 # ─────────────────────────────────────────────
@@ -221,6 +325,15 @@ class TextAndTableSolver:
             gpu=CONFIG["gpu"],
             verbose=False,
         )
+        self.slanet = None
+        if CONFIG.get("use_slanet"):
+            try:
+                print("[Stage 2] Loading SLANet (PP-StructureV3) ...")
+                self.slanet = SLANetTableSolver()
+            except Exception as e:
+                print(f"[WARN] SLANet unavailable, falling back to TATR: {e}")
+                self.slanet = None
+
         print("[Stage 2] Loading TATR ...")
         self.tatr = TATRTableSolver(self.reader)
         print("[Stage 2] All models ready.\n")
@@ -251,10 +364,41 @@ class TextAndTableSolver:
         return region
 
     def _solve_text(self, region: dict) -> dict:
-        lines           = self._run_ocr(region["image"])
-        raw_text        = " ".join(lines)
-        region["text"]  = raw_text
-        region["latex"] = latex_escape(raw_text) + "\n\n"
+        lines = self._run_ocr_with_coords(region["image"])
+        if not lines:
+            region["text"] = ""
+            region["latex"] = ""
+            return region
+
+        # group by line using y-gap
+        lines.sort(key=lambda l: l["y"])
+        heights = [l["h"] for l in lines if l.get("h")]
+        med_h = float(np.median(heights)) if heights else 12.0
+        gap_thresh = max(6.0, 0.5 * med_h)
+
+        grouped = []
+        cur = []
+        cur_ymax = None
+        for l in lines:
+            y_min = l["y"]
+            y_max = l["y"] + l["h"]
+            if cur and cur_ymax is not None and (y_min - cur_ymax) > gap_thresh:
+                grouped.append(cur)
+                cur = []
+            cur.append(l)
+            cur_ymax = max(cur_ymax or y_max, y_max)
+        if cur:
+            grouped.append(cur)
+
+        out_lines = []
+        for g in grouped:
+            g.sort(key=lambda l: l["x"])
+            out_lines.append(" ".join(l["text"] for l in g))
+
+        raw_text = "\n".join(out_lines)
+        region["text"] = raw_text
+        latex_text = latex_escape(raw_text).replace("\n", " \\\\\n")
+        region["latex"] = latex_text + "\n\n"
         return region
 
     def _solve_list(self, region: dict) -> dict:
@@ -264,8 +408,11 @@ class TextAndTableSolver:
             region["text"]  = ""
             return region
 
-        base_x    = min(line["x"] for line in raw_lines)
-        threshold = CONFIG["indent_threshold_px"]
+        base_x = min(line["x"] for line in raw_lines)
+        xs = sorted(set(line["x"] for line in raw_lines))
+        diffs = [b - a for a, b in zip(xs, xs[1:]) if (b - a) > 2]
+        dyn_thresh = min(diffs) if diffs else CONFIG["indent_threshold_px"]
+        threshold = max(8, dyn_thresh)
 
         for line in raw_lines:
             line["level"] = max(0, int((line["x"] - base_x) // threshold))
@@ -279,6 +426,24 @@ class TextAndTableSolver:
         return region
 
     def _solve_table(self, region: dict) -> dict:
+        # Optional upscale for better table OCR/structure
+        scale = float(CONFIG.get("table_upscale", 1.0))
+        if scale > 1.0:
+            from PIL import Image as PILImage
+            img = region["image"]
+            h, w = img.shape[:2]
+            new_size = (int(w * scale), int(h * scale))
+            region["image"] = np.array(
+                PILImage.fromarray(img).resize(new_size, resample=PILImage.BICUBIC)
+            )
+
+        if self.slanet:
+            parsed = self.slanet.parse(region["image"])
+            if parsed.get("latex"):
+                region["latex"] = parsed["latex"]
+                region["table_grid"] = parsed["table_grid"]
+                region["text"] = parsed["text"]
+                return region
         parsed               = self.tatr.parse(region["image"])
         region["latex"]      = parsed["latex"]
         region["table_grid"] = parsed["table_grid"]
@@ -317,6 +482,11 @@ class TextAndTableSolver:
         results = self.reader.readtext(img, detail=1, paragraph=False)
         results.sort(key=lambda r: r[0][0][1])
         return [
-            {"text": r[1], "x": r[0][0][0]}
+            {
+                "text": r[1],
+                "x": r[0][0][0],
+                "y": min(p[1] for p in r[0]),
+                "h": max(p[1] for p in r[0]) - min(p[1] for p in r[0]),
+            }
             for r in results if r[2] > CONFIG["ocr_confidence"]
         ]

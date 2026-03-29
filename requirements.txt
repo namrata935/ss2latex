@@ -7,3 +7,4 @@ transformers
 timm
 opencv-python
 pdf2image
+datasets[vision]
