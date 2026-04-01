@@ -116,11 +116,13 @@ def grid_to_tabular(grid: list) -> str:
 def clean_table_grid(grid: list,
                      col_widths: list | None = None,
                      min_col_width_ratio: float = 0.06,
-                     merge_dollar_cols: bool = True) -> list:
+                     merge_dollar_cols: bool = True,
+                     merge_currency_prefix: bool = True) -> list:
     """
     Heuristic cleanup:
       - merge very narrow columns into neighbors
-      - merge columns that only contain "$" or empty
+      - merge columns that only contain "$"/currency symbols or are empty
+      - prepend currency prefix cells onto the next column's values
     """
     if not grid:
         return grid
@@ -128,13 +130,29 @@ def clean_table_grid(grid: list,
     col_count = max(len(r) for r in grid)
     rows = [r + [""] * (col_count - len(r)) for r in grid]
 
+    # Currency/dollar symbols that should be prefixes, not standalone columns
+    _CURRENCY = {"$", r"\$", "£", "€", "¥", "₹", "USD", "GBP", "EUR"}
+
     # Decide which columns to merge
     merge_cols = set()
     if merge_dollar_cols:
         for c in range(col_count):
-            vals = [rows[r][c].strip() for r in range(len(rows))]
-            if all(v in ("", "$", r"\$") for v in vals):
+            # Check data rows only (skip header row 0) for currency detection
+            data_rows = range(1, len(rows)) if len(rows) > 1 else range(len(rows))
+            vals = [rows[r][c].strip() for r in data_rows]
+            non_empty = [v for v in vals if v]
+            if not non_empty:
+                continue
+            currency_count = sum(1 for v in non_empty if v in _CURRENCY)
+            # Merge if ≥75% of data values are currency symbols
+            # (tolerates occasional OCR misread like "S" for "$")
+            if currency_count / len(non_empty) >= 0.75:
                 merge_cols.add(c)
+                # Fix misread currency symbols in this column
+                for r in data_rows:
+                    v = rows[r][c].strip()
+                    if v and v not in _CURRENCY and len(v) == 1:
+                        rows[r][c] = "$"
 
     if col_widths and len(col_widths) == col_count:
         max_w = max(col_widths) or 1.0
@@ -142,7 +160,7 @@ def clean_table_grid(grid: list,
             if (w / max_w) < min_col_width_ratio:
                 merge_cols.add(c)
 
-    # Merge columns into right neighbor if possible, else left
+    # Merge columns: currency prefix cols prepend to right neighbor
     for c in sorted(merge_cols):
         target = c + 1 if c + 1 < col_count else c - 1
         if target < 0:
@@ -150,8 +168,12 @@ def clean_table_grid(grid: list,
         for r in range(len(rows)):
             cell = rows[r][c].strip()
             if cell:
-                if rows[r][target].strip():
-                    rows[r][target] = f"{rows[r][target].strip()} {cell}"
+                neighbor = rows[r][target].strip()
+                if merge_currency_prefix and cell in _CURRENCY and neighbor:
+                    # "$ value" with space (standard notation)
+                    rows[r][target] = f"{cell} {neighbor}"
+                elif neighbor:
+                    rows[r][target] = f"{neighbor} {cell}"
                 else:
                     rows[r][target] = cell
             rows[r][c] = ""
